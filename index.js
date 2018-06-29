@@ -1,17 +1,12 @@
 import { ApolloServer, gql } from 'apollo-server'
 import moment from 'moment'
+import fs from 'fs'
+import path from 'path'
+import serialport from 'serialport'
+import { connectToPrinter } from './src/printer/connexion'
+import { durationAlgorithm } from './src/utils/files'
 
-// This is a (sample) collection of books we'll be able to query
-// the GraphQL server for.  A more complete example might fetch
-// from an existing data source like a REST API or database.
-const serieports = [
-  {
-    name: '/dev/tty1'
-  },
-  {
-    name: '/dev/tty2'
-  }
-]
+let SerialPort = null
 
 const files = [
   {
@@ -34,9 +29,19 @@ const typeDefs = gql`
     date: String
   }
 
+  type PrinterResponse {
+    status: String
+    message: String
+  }
+
   type Query {
     serieports: [SeriePort]
-    files: [File]
+    files(name: String): [File]
+  }
+
+  type Mutation {
+    connectToPrinter(port: String, baudRate: Int): PrinterResponse
+    readDir(dir: String): [File]
   }
 `
 
@@ -44,18 +49,57 @@ const typeDefs = gql`
 // schema.  We'll retrieve books from the "books" array above.
 const resolvers = {
   Query: {
-    serieports: () => serieports,
-    files: () => files
+    serieports: (obj, args, context, info) => {
+      return serialport.list().then((res, err) => {
+        err && console.log(err)
+        return res.map(r => ({
+          name: r.comName
+        }))
+      })
+    },
+    files: (obj, args, context, info) => {
+      if (args.name) {
+        return files.filter(f => f.name === args.name)
+      }
+      return files
+    }
+  },
+  Mutation: {
+    connectToPrinter: (obj, args, context, info) => {
+      return new Promise((resolve, reject) => {
+        SerialPort = new serialport(args.port, err => {
+          reject(err.message)
+        })
+        SerialPort.on('open', () => {
+          resolve('connected')
+        })
+      })
+        .then(message => {
+          return { status: 'OK', message }
+        })
+        .catch(err => {
+          return { status: 'ERROR', message: err }
+        })
+    },
+    readDir: (obj, args, context, info) => {
+      return new Promise((resolve, reject) => {
+        fs.readdir(args.dir, (err, files) => {
+          err && reject(err)
+          resolve(files)
+        })
+      }).then(files => {
+        return files.filter(f => path.extname(f) === '.gcode').map(f => ({
+          name: path.basename(f, path.extname(f)),
+          duration: durationAlgorithm(args.dir + '/' + f),
+          date: moment(fs.statSync(args.dir + '/' + f).mtime).toISOString()
+        }))
+      })
+    }
   }
 }
 
-// In the most basic sense, the ApolloServer can be started
-// by passing type definitions (typeDefs) and the resolvers
-// responsible for fetching the data for those types.
 const server = new ApolloServer({ typeDefs, resolvers })
 
-// This `listen` method launches a web-server.  Existing apps
-// can utilize middleware options, which we'll discuss later.
 server.listen().then(({ url }) => {
   console.log(`🚀  Server ready at ${url}`)
 })
