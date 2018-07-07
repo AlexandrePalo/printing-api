@@ -8,6 +8,10 @@ import { connectToPrinter } from './src/printer/connexion'
 import { durationAlgorithm } from './src/utils/files'
 import uuidv4 from 'uuid/v4'
 import jwt from 'jsonwebtoken'
+import dotenv from 'dotenv'
+dotenv.config()
+
+const privateKey = process.env.PRIVATEKEY
 
 import { User } from './src/models'
 
@@ -23,9 +27,6 @@ const getObjectInArray = (arr, id) => {
   })
   return object
 }
-
-const privateKey =
-  "_a$glTa>^A]2<W/TYw43x!%4y70h?]OY]<AKQW<s~m?blH(d%PKPC'#OFoi%j"
 
 const typeDefs = gql`
   type User {
