@@ -9,6 +9,8 @@ import { durationAlgorithm } from './src/utils/files'
 import uuidv4 from 'uuid/v4'
 import jwt from 'jsonwebtoken'
 
+import { User } from './src/models'
+
 let SerialPort = null
 const uploadDir = __dirname + '/public/3D'
 
@@ -21,15 +23,7 @@ const getObjectInArray = (arr, id) => {
   })
   return object
 }
-const users = [
-  {
-    id: '45745c60-7b1a-11e8-9c9c-2d42b21b1a3e',
-    username: 'apalo',
-    passwordHash:
-      '018c1b59605a109a08fcd7e40e71a877d97f09405cbd2a78c153d30bb4f0540f',
-    name: 'Alexandre PALO'
-  }
-]
+
 const privateKey =
   "_a$glTa>^A]2<W/TYw43x!%4y70h?]OY]<AKQW<s~m?blH(d%PKPC'#OFoi%j"
 
@@ -188,22 +182,35 @@ const resolvers = {
     },
     login: (obj, args, context, info) => {
       return new Promise((resolve, reject) => {
+        // Check if user exist with username
         let user = null
-        users.forEach(u => {
-          if (u.username === args.username) {
-            user = u
-          }
-        })
-        !user && reject('Bad credentials')
+        User.query()
+          .where('username', args.username)
+          .then(users => {
+            if (users.length === 1) {
+              user = users[0]
 
-        let hash = forge.md.sha256.create()
-        hash.update(args.password)
-        if (hash.digest().toHex() === user.passwordHash) {
-          const token = jwt.sign(user, privateKey)
-          resolve(token)
-        } else {
-          reject('Bad credentials')
-        }
+              let hash = forge.md.sha256.create()
+              hash.update(args.password)
+              if (hash.digest().toHex() === user.passwordHash) {
+                const token = jwt.sign(
+                  {
+                    id: user.id,
+                    username: user.username,
+                    name: user.name,
+                    passwordHash: user.passwordHash,
+                    privateTokenRevokeKey: user.privateTokenRevokeKey
+                  },
+                  privateKey
+                )
+                resolve(token)
+              } else {
+                reject('Bad credentials')
+              }
+            } else {
+              reject('Bad credentials')
+            }
+          })
       })
         .then(token => {
           return { token }
@@ -216,17 +223,30 @@ const resolvers = {
       return new Promise((resolve, reject) => {
         // Decode jwt and check user
         let userToken = jwt.decode(args.token)
-        if (!userToken.id || !users.map(u => u.id).includes(userToken.id)) {
-          reject('User not found')
+        if (!userToken.id) {
+          reject('Bad token format')
         }
-        // Get current user in backend
-        const user = getObjectInArray(users, userToken.id)
-        // Verify token
+
+        // Verify full token
         if (!jwt.verify(args.token, privateKey)) {
-          reject('Bad token')
         }
-        // Everything ok, send current user
-        resolve(user)
+
+        // Get backend user
+        User.query()
+          .where('id', userToken.id)
+          .where('privateTokenRevokeKey', userToken.privateTokenRevokeKey)
+          .limit(1)
+          .first()
+          .then(user => {
+            // No user
+            if (!user) {
+              reject('User not found')
+            }
+            resolve(user)
+          })
+          .catch(err => {
+            reject(err)
+          })
       })
         .then(user => {
           return user
@@ -238,51 +258,39 @@ const resolvers = {
   }
 }
 
-const processUpload = async upload => {
-  console.log(upload)
-  const { stream, filename, mimetype, encoding } = await upload
-  console.log(stream, filename, mimetype, encoding)
-
-  const { id, path } = await storeFS({ stream, filename })
-  return storeFS({ id, filename, mimetype, encoding, path })
-}
-
-const storeFS = ({ stream, filename }) => {
-  const id = uuidv4()
-  const path = `${uploadDir}/${id}-${filename}`
-  return new Promise((resolve, reject) =>
-    stream
-      .on('error', error => {
-        if (stream.truncated)
-          // Delete the truncated file
-          fs.unlinkSync(path)
-        reject(error)
-      })
-      .pipe(fs.createWriteStream(path))
-      .on('error', error => reject(error))
-      .on('finish', () => resolve({ id, path }))
-  )
-}
-
 const server = new ApolloServer({
   typeDefs,
   resolvers,
-  context: ({ req }) => {
+  context: async ({ req }) => {
     // Authorization requested
     if (req.headers.authorization) {
       // Get token
       const token = req.headers.authorization.split(' ')[1]
       // Get user and check if exist
       const userToken = jwt.decode(token)
-      if (!userToken.id || !users.map(u => u.id).includes(userToken.id)) {
-        throw new AuthorizationError('user not found')
+      if (!userToken.id) {
+        throw new AuthorizationError('Bad token format')
       }
+
+      // Backend user
+      const user = await User.query()
+        .where('id', userToken.id)
+        .where('privateTokenRevokeKey', userToken.privateTokenRevokeKey)
+        .limit(1)
+        .first()
+
+      // No user
+      if (!user) {
+        throw new AuthorizationError('User not found')
+      }
+
       // Verify token
       if (!jwt.verify(token, privateKey)) {
         throw new AuthorizationError('bad token')
       }
+
       // Return user
-      return { user: getObjectInArray(users, userToken.id) }
+      return { user }
     }
     return { user: null }
   }
