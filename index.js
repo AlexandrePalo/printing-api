@@ -9,24 +9,12 @@ import { durationAlgorithm } from './src/utils/files'
 import uuidv4 from 'uuid/v4'
 import jwt from 'jsonwebtoken'
 import dotenv from 'dotenv'
-dotenv.config()
-
-const privateKey = process.env.PRIVATEKEY
-
 import { User } from './src/models'
 
+dotenv.config()
+const privateKey = process.env.PRIVATEKEY
 let SerialPort = null
 const uploadDir = __dirname + '/public/3D'
-
-const getObjectInArray = (arr, id) => {
-  let object = null
-  arr.forEach(e => {
-    if (e.id === id) {
-      object = e
-    }
-  })
-  return object
-}
 
 const typeDefs = gql`
   type User {
@@ -55,14 +43,21 @@ const typeDefs = gql`
     message: String
   }
 
+  type PrinterState {
+    connected: Boolean
+    port: String
+    baudRate: Int
+  }
+
   type Query {
     serieports: [SeriePort]
+    getPrinterState: PrinterState
   }
 
   type Mutation {
     login(username: String, password: String): JWT
     reLogin(token: String): User
-    connectToPrinter(port: String, baudRate: Int): PrinterResponse
+    connectToPrinter(port: String, baudRate: Int): PrinterState
     readDir: [File]
     deleteFile(path: String): File
     addFile(file: Upload): File
@@ -80,23 +75,71 @@ const resolvers = {
           name: r.comName
         }))
       })
+    },
+    getPrinterState: (obj, args, context, info) => {
+      // Object not instanciated
+      if (!SerialPort) {
+        // Already killed
+        return {
+          connected: false,
+          port: null,
+          baudRate: null
+        }
+      }
+      // Not connected
+      if (!SerialPort.isOpen) {
+        // Kill previous connexion
+        SerialPort = null
+        return {
+          connected: false,
+          port: null,
+          baudRate: null
+        }
+      }
+      // Connected
+      return {
+        connected: true,
+        port: SerialPort.path,
+        baudRate: SerialPort.baudRate
+      }
     }
   },
   Mutation: {
     connectToPrinter: (obj, args, context, info) => {
       return new Promise((resolve, reject) => {
-        SerialPort = new serialport(args.port, err => {
-          reject(err.message)
-        })
-        SerialPort.on('open', () => {
+        SerialPort = new serialport(
+          args.port,
+          {
+            baudRate: args.baudRate
+          },
+          err => {
+            if (err) {
+              reject(err)
+            }
+          }
+        )
+        SerialPort.on('open', err => {
+          if (err) {
+            reject(err)
+          }
           resolve('connected')
         })
       })
         .then(message => {
-          return { status: 'OK', message }
+          return {
+            connected: true,
+            port: SerialPort.path,
+            baudRate: SerialPort.baudRate
+          }
         })
         .catch(err => {
-          return { status: 'ERROR', message: err }
+          // Kill bad connexion
+          SerialPort = null
+          return {
+            connected: false,
+            port: null,
+            baudRate: null
+          }
         })
     },
     readDir: (obj, args, context, info) => {
